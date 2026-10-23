@@ -1,0 +1,51 @@
+:8080 {
+	root * /usr/share/caddy
+	encode gzip zstd
+
+	route {
+		@private path_regexp (^|/)(\.git|node_modules|vendor|\.venv|_headers|_redirects)(/|$)
+		respond @private "Not Found" 404
+
+		static_rules * /usr/share/caddy
+
+		@asset {
+			path_regexp \.[A-Za-z0-9]+$
+			not path *.html *.htm
+		}
+		handle @asset {
+			file_server
+		}
+
+		@document file {path} {path}.html {path}/index.html
+		handle @document {
+			rewrite * {http.matchers.file.relative}
+			file_server
+		}
+
+		@mpa file /404.html
+		handle @mpa {
+			rewrite * /404.html
+			request_header -Range
+			request_header -If-Range
+			# Preserve conditional responses (304/412), including stale validators.
+			intercept {
+				@success status 200
+				replace_status @success 404
+			}
+			file_server
+		}
+
+		handle {
+			rewrite * /index.html
+			file_server
+		}
+	}
+
+	handle_errors 404 {
+		respond "Not Found" 404
+	}
+
+	log {
+		output stderr
+	}
+}

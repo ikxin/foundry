@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!Caddyfile
+!go.mod
+!go.sum
+!rules.go

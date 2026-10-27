@@ -1,6 +1,6 @@
 # ikxin/caddy
 
-使用官方 Caddy 2.11.7 镜像和本目录的 `static_rules` 模块构建，支持静态站点服务、自定义响应头和重定向规则。
+使用官方 Caddy 2.11.7 构建镜像和本目录的 `static_rules` 模块编译，运行环境为 Alpine，支持静态站点服务、自定义响应头和重定向规则。最终镜像仅声明 `8080/tcp` 端口。
 
 ## 构建和运行
 
@@ -12,7 +12,7 @@ docker run --rm -p 8080:8080 \
   -v "$PWD/dist:/usr/share/caddy:ro" ikxin/caddy:latest
 ```
 
-默认监听 `8080`，站点目录为 `/usr/share/caddy`，访问日志输出到 stderr。
+默认监听 `8080`，站点目录为 `/usr/share/caddy`。默认关闭管理 API，不监听 `2019` 端口；默认关闭访问日志，启动和运行日志仍输出到 stderr，便于由反向代理统一记录网站访问。
 
 将镜像用于站点构建的最终阶段：
 
@@ -42,7 +42,7 @@ docker buildx build \
 
 ## 站点规则
 
-在站点根目录放置可选的 `_headers`、`_redirects` 文件，启动时读取。修改后重启容器，或执行 `caddy reload --force --config /etc/caddy/Caddyfile --adapter caddyfile`。
+在站点根目录放置可选的 `_headers`、`_redirects` 文件，启动时读取。修改后重启容器使其生效；管理 API 已关闭，不支持 `caddy reload`。
 
 `_headers` 示例：
 

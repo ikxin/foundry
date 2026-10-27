@@ -1,3 +1,7 @@
+{
+	admin off
+}
+
 :8080 {
 	root * /usr/share/caddy
 	encode gzip zstd
@@ -43,9 +47,5 @@
 
 	handle_errors 404 {
 		respond "Not Found" 404
-	}
-
-	log {
-		output stderr
 	}
 }

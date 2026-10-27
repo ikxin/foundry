@@ -34,16 +34,18 @@ func init() {
 	httpcaddyfile.RegisterDirectiveOrder("static_rules", httpcaddyfile.Before, "file_server")
 }
 
-// StaticRules loads exact-path rules from the site's _headers and _redirects files.
+// StaticRules loads rules from the site's _headers and _redirects files.
 type StaticRules struct {
 	Root string `json:"root,omitempty"`
 
 	headers   map[string]http.Header
 	redirects map[string]redirect
+	wildcards []redirect
 }
 
 type redirect struct {
-	target string
+	source string
+	target *url.URL
 	status int
 }
 
@@ -57,6 +59,7 @@ func (StaticRules) CaddyModule() caddy.ModuleInfo {
 func (s *StaticRules) Provision(_ caddy.Context) error {
 	s.headers = make(map[string]http.Header)
 	s.redirects = make(map[string]redirect)
+	s.wildcards = nil
 	var headers http.Header
 
 	err := readRules(filepath.Join(s.Root, "_headers"), func(line string) error {
@@ -82,17 +85,25 @@ func (s *StaticRules) Provision(_ caddy.Context) error {
 
 	return readRules(filepath.Join(s.Root, "_redirects"), func(line string) error {
 		fields := strings.Fields(line)
-		if len(fields) != 3 || !strings.HasPrefix(fields[0], "/") {
-			return errors.New("expected /source target status")
+		if (len(fields) != 2 && len(fields) != 3) || !strings.HasPrefix(fields[0], "/") {
+			return errors.New("expected /source target [status]")
 		}
-		target, err := url.ParseRequestURI(fields[1])
+		source := strings.TrimRight(fields[0], "/")
+		if strings.Contains(source, "*") &&
+			(!strings.HasSuffix(source, "/*") || strings.Count(source, "*") != 1) {
+			return errors.New("only a trailing /* wildcard is supported")
+		}
+		target, err := url.Parse(fields[1])
 		if err != nil || (!strings.HasPrefix(fields[1], "/") &&
 			((target.Scheme != "http" && target.Scheme != "https") || target.Host == "")) {
 			return fmt.Errorf("invalid redirect target: %q", fields[1])
 		}
-		status, err := strconv.Atoi(fields[2])
-		if err != nil {
-			return fmt.Errorf("invalid redirect status: %q", fields[2])
+		status := http.StatusFound
+		if len(fields) == 3 {
+			status, err = strconv.Atoi(fields[2])
+			if err != nil {
+				return fmt.Errorf("invalid redirect status: %q", fields[2])
+			}
 		}
 		switch status {
 		case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
@@ -100,7 +111,18 @@ func (s *StaticRules) Provision(_ caddy.Context) error {
 		default:
 			return fmt.Errorf("unsupported redirect status: %d", status)
 		}
-		s.redirects[rulePath(fields[0])] = redirect{target: fields[1], status: status}
+		rule := redirect{source: source, target: target, status: status}
+		if !strings.HasSuffix(source, "/*") {
+			s.redirects[rulePath(source)] = rule
+			return nil
+		}
+		for i, previous := range s.wildcards {
+			if previous.source == source {
+				s.wildcards[i] = rule
+				return nil
+			}
+		}
+		s.wildcards = append(s.wildcards, rule)
 		return nil
 	})
 }
@@ -108,8 +130,15 @@ func (s *StaticRules) Provision(_ caddy.Context) error {
 func (s *StaticRules) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	path := rulePath(r.URL.Path)
 	if rule, ok := s.redirects[path]; ok {
-		http.Redirect(w, r, rule.target, rule.status)
+		target, _ := rule.location(r.URL)
+		http.Redirect(w, r, target, rule.status)
 		return nil
+	}
+	for _, rule := range s.wildcards {
+		if target, ok := rule.location(r.URL); ok {
+			http.Redirect(w, r, target, rule.status)
+			return nil
+		}
 	}
 	for name, values := range s.headers[path] {
 		for _, value := range values {
@@ -117,6 +146,48 @@ func (s *StaticRules) ServeHTTP(w http.ResponseWriter, r *http.Request, next cad
 		}
 	}
 	return next.ServeHTTP(w, r)
+}
+
+func (rule redirect) location(request *url.URL) (string, bool) {
+	target := *rule.target
+	if strings.HasSuffix(rule.source, "/*") {
+		prefix := strings.TrimSuffix(rule.source, "*")
+		var splat, escapedSplat string
+		switch {
+		case request.Path == strings.TrimSuffix(prefix, "/"):
+		case strings.HasPrefix(request.Path, prefix):
+			splat = strings.TrimPrefix(request.Path, prefix)
+			escapedSplat = escapedPathSuffix(request, len(prefix))
+		default:
+			return "", false
+		}
+		escapedTarget := target.EscapedPath()
+		target.Path = strings.ReplaceAll(target.Path, ":splat", splat)
+		target.RawPath = strings.ReplaceAll(escapedTarget, ":splat", escapedSplat)
+		if target.Host == "" && strings.HasPrefix(target.Path, "//") {
+			target.RawPath = "/%2F" + target.EscapedPath()[2:]
+		}
+	} else if rule.source != strings.TrimRight(request.Path, "/") {
+		return "", false
+	}
+	if target.RawQuery == "" && !target.ForceQuery {
+		target.RawQuery = request.RawQuery
+		target.ForceQuery = request.ForceQuery
+	}
+	return target.String(), true
+}
+
+// Skip decoded prefix bytes without unescaping the captured redirect path.
+func escapedPathSuffix(u *url.URL, prefixLength int) string {
+	path := u.EscapedPath()
+	for range prefixLength {
+		if path[0] == '%' {
+			path = path[3:]
+		} else {
+			path = path[1:]
+		}
+	}
+	return path
 }
 
 func rulePath(path string) string {
